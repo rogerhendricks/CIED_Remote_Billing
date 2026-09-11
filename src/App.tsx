@@ -16,6 +16,7 @@ import { AddRecordModal } from './components/AddRecordModal';
 import { EndOfWeekBillingSheetModal } from './components/EndOfWeekBillingSheetModal';
 import { ClinicLockScreen, CLINIC_STAFF_MEMBERS } from './components/ClinicLockScreen';
 import { SecuritySettingsModal } from './components/SecuritySettingsModal';
+import { StorageArchitectureModal } from './components/StorageArchitectureModal';
 import { 
   Activity, 
   Layers, 
@@ -29,7 +30,8 @@ import {
   Building2,
   Bell,
   Lock,
-  Key
+  Key,
+  Database
 } from 'lucide-react';
 
 export default function App() {
@@ -42,6 +44,7 @@ export default function App() {
   const [sessionToken, setSessionToken] = useState<string>('dev-session-cardiac-auth');
   const [isStationLocked, setIsStationLocked] = useState<boolean>(false);
   const [isSecurityModalOpen, setIsSecurityModalOpen] = useState<boolean>(false);
+  const [isStorageModalOpen, setIsStorageModalOpen] = useState<boolean>(false);
   const [autoLockMinutes, setAutoLockMinutes] = useState<number>(15);
 
   // Master records with localStorage and Hub API synchronization
@@ -316,6 +319,16 @@ export default function App() {
                 <span>Hub API: Online</span>
               </div>
 
+              {/* SQLite Database Engine Status & Multi-Clinician Architecture */}
+              <button
+                onClick={() => setIsStorageModalOpen(true)}
+                title="View SQLite 3 Database Status, Concurrency & Medicare Compliance Audit"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-xs font-semibold transition-all cursor-pointer"
+              >
+                <Database className="w-3.5 h-3.5 text-indigo-600" />
+                <span className="hidden md:inline">SQLite Engine</span>
+              </button>
+
               {/* LAN Security & Keys button */}
               <button
                 onClick={() => setIsSecurityModalOpen(true)}
@@ -479,6 +492,15 @@ export default function App() {
           autoLockMinutes={autoLockMinutes}
           onUpdateAutoLock={(mins) => setAutoLockMinutes(mins)}
           onLockStationNow={() => setIsStationLocked(true)}
+        />
+      )}
+
+      {isStorageModalOpen && (
+        <StorageArchitectureModal
+          isOpen={isStorageModalOpen}
+          onClose={() => setIsStorageModalOpen(false)}
+          clinicSecurityKey={clinicSecurityKey}
+          sessionToken={sessionToken}
         />
       )}
 
