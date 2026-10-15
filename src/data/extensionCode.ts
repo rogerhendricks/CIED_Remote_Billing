@@ -170,7 +170,7 @@ function extractPortalData() {
         lines.forEach(l => {
           if (l.toLowerCase().startsWith('patient id:')) {
             result.patientId = l.replace(/patient id:/i, '').trim();
-          } else if (l.includes('Assura') || l.includes('Quadra') || l.includes('Endurity') || l.includes('Gallivant') || l.includes('Fortify') || l.includes('Confirm')) {
+          } else if (l.includes('Assura') || l.includes('Quadra') || l.includes('Endurity') || l.includes('Ellipse') || l.includes('Fortify')|| l.includes('Assurity')|| l.includes('Gallant')|| l.includes('Assert') || l.includes('Jot') || l.includes('Unify')|| l.includes('Neutrino') || l.includes('Confirm')) {
             result.deviceModel = l;
           }
         });
@@ -190,7 +190,7 @@ function extractPortalData() {
     // - 11719: Defibrillator (ICD / CRT-D)
     // - 11725: Pacemaker (PPM)
     const dev = (result.deviceModel || '').toLowerCase();
-    const isLoop = dev.includes('biomonitor') || dev.includes('linq') || dev.includes('reveal') || dev.includes('confirm') || dev.includes('icm') || dev.includes('loop');
+    const isLoop = dev.includes('biomonitor') || dev.includes('linq') || dev.includes('reveal') || dev.includes('confirm') || dev.includes('icm') || dev.includes('jot') || dev.includes('lux') || dev.includes('loop');
 
     if (isLoop) {
       // Default loop recorder to 11736 (AF) with option to switch to 11737 (Syncope/Stroke)

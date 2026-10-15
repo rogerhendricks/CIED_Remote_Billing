@@ -1,14 +1,7 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState, useEffect, useRef } from 'react';
 import { PatientRecord, LogStatus, ClinicStaff, EndOfWeekBillingSheet } from './types';
 import { INITIAL_PATIENT_RECORDS } from './data/initialRecords';
 import { PracticeLogTable } from './components/PracticeLogTable';
-import { PortalSimulator } from './components/PortalSimulator';
-import { BrainstormingAnalysis } from './components/BrainstormingAnalysis';
 import { ExtensionDownloader } from './components/ExtensionDownloader';
 import { OutlookEmailModal } from './components/OutlookEmailModal';
 import { PdfReportModal } from './components/PdfReportModal';
@@ -19,30 +12,37 @@ import { SecuritySettingsModal } from './components/SecuritySettingsModal';
 import { StorageArchitectureModal } from './components/StorageArchitectureModal';
 import { 
   Activity, 
-  Layers, 
   FolderDown, 
-  Lightbulb, 
   HeartPulse, 
-  Mail, 
-  Printer, 
   ShieldCheck, 
-  Users, 
   Building2,
-  Bell,
   Lock,
-  Key,
+  LogOut,
   Database
 } from 'lucide-react';
 
 export default function App() {
   // Navigation active tab
-  const [activeTab, setActiveTab] = useState<'log' | 'simulator' | 'extension' | 'brainstorm'>('log');
+  const [activeTab, setActiveTab] = useState<'log' | 'extension'>('log');
 
   // Security and Clinic Staff Authentication State
   const [clinicSecurityKey, setClinicSecurityKey] = useState<string>('CARDIO-WESTMEAD-8820');
-  const [activeStaff, setActiveStaff] = useState<ClinicStaff>(CLINIC_STAFF_MEMBERS[0]);
-  const [sessionToken, setSessionToken] = useState<string>('dev-session-cardiac-auth');
-  const [isStationLocked, setIsStationLocked] = useState<boolean>(false);
+  const [sessionToken, setSessionToken] = useState<string>(() => {
+    return sessionStorage.getItem('cardiac_session_token') || '';
+  });
+  const [isStationLocked, setIsStationLocked] = useState<boolean>(() => {
+    return !sessionStorage.getItem('cardiac_session_token');
+  });
+  const [activeStaff, setActiveStaff] = useState<ClinicStaff>(() => {
+    try {
+      const saved = sessionStorage.getItem('cardiac_active_staff');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      // ignore
+    }
+    return CLINIC_STAFF_MEMBERS[0];
+  });
+
   const [isSecurityModalOpen, setIsSecurityModalOpen] = useState<boolean>(false);
   const [isStorageModalOpen, setIsStorageModalOpen] = useState<boolean>(false);
   const [autoLockMinutes, setAutoLockMinutes] = useState<number>(15);
@@ -55,7 +55,7 @@ export default function App() {
     } catch (e) {
       console.error('Failed to parse saved records', e);
     }
-    return INITIAL_PATIENT_RECORDS;
+    return []; // Clean empty database in production
   });
 
   // End of Week Billing Sheets store
@@ -73,6 +73,8 @@ export default function App() {
 
   // Poll / sync with Backend Express Server using authenticated headers
   const fetchHubRecords = async () => {
+    if (!sessionToken) return;
+
     try {
       const res = await fetch('/api/records', {
         headers: {
@@ -82,13 +84,14 @@ export default function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.records && data.records.length > 0) {
+        if (Array.isArray(data.records)) {
           setRecords(data.records);
           setIsHubOnline(true);
         }
       } else if (res.status === 401) {
-        // Auth rejected
+        // Session expired or invalidated on server
         setIsHubOnline(false);
+        setIsStationLocked(true);
       }
 
       // Fetch saved billing sheets
@@ -105,16 +108,17 @@ export default function App() {
         }
       }
     } catch (err) {
-      // Backend may be running purely client-side in preview
       setIsHubOnline(false);
     }
   };
 
   useEffect(() => {
-    fetchHubRecords();
-    const interval = setInterval(fetchHubRecords, 10000); // 10s live sync for multi-user
-    return () => clearInterval(interval);
-  }, [clinicSecurityKey, sessionToken]);
+    if (sessionToken && !isStationLocked) {
+      fetchHubRecords();
+      const interval = setInterval(fetchHubRecords, 10000); // 10s live sync for multi-user
+      return () => clearInterval(interval);
+    }
+  }, [clinicSecurityKey, sessionToken, isStationLocked]);
 
   // Auto-lock on inactivity timer (Australian Privacy APP 11 compliance)
   const lastActivityRef = useRef<number>(Date.now());
@@ -152,7 +156,7 @@ export default function App() {
   const [isEndOfWeekModalOpen, setIsEndOfWeekModalOpen] = useState(false);
   const [activeRecordsForModal, setActiveRecordsForModal] = useState<PatientRecord[]>([]);
 
-  // Save to localStorage
+  // Save to localStorage cache
   useEffect(() => {
     try {
       localStorage.setItem('cardiac_practice_records', JSON.stringify(records));
@@ -161,7 +165,7 @@ export default function App() {
     }
   }, [records]);
 
-  // Save billing sheets to localStorage
+  // Save billing sheets to localStorage cache
   useEffect(() => {
     try {
       localStorage.setItem('cardiac_practice_billing_sheets', JSON.stringify(billingSheets));
@@ -254,12 +258,27 @@ export default function App() {
     }
   };
 
-  const handleResetSampleData = () => {
-    setRecords(INITIAL_PATIENT_RECORDS);
+  const handleResetSampleData = async () => {
+    try {
+      const res = await fetch('/api/dev/seed', {
+        method: 'POST',
+        headers: {
+          'X-Clinic-Key': clinicSecurityKey,
+          'X-Session-Token': sessionToken
+        }
+      });
+      if (res.ok) {
+        fetchHubRecords();
+      } else {
+        setRecords(INITIAL_PATIENT_RECORDS);
+      }
+    } catch (e) {
+      setRecords(INITIAL_PATIENT_RECORDS);
+    }
   };
 
   const handleMarkAsEmailed = (ids: string[]) => {
-    setRecords(prev => prev.map(r => ids.includes(r.id) ? { ...r, status: 'Emailed' } : r));
+    setRecords(prev => prev.map(r => ids.includes(r.id) ? { ...r, status: 'Emailed' as LogStatus } : r));
     setIsOutlookOpen(false);
   };
 
@@ -276,10 +295,32 @@ export default function App() {
   const handleUnlockStation = (staff: ClinicStaff, token: string) => {
     setActiveStaff(staff);
     setSessionToken(token);
+    sessionStorage.setItem('cardiac_session_token', token);
+    sessionStorage.setItem('cardiac_active_staff', JSON.stringify(staff));
     setIsStationLocked(false);
     lastActivityRef.current = Date.now();
   };
 
+  const handleLockStation = () => {
+    setIsStationLocked(true);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'X-Session-Token': sessionToken }
+      });
+    } catch (e) {
+      // ignore
+    }
+    setSessionToken('');
+    sessionStorage.removeItem('cardiac_session_token');
+    sessionStorage.removeItem('cardiac_active_staff');
+    setIsStationLocked(true);
+  };
+
+  const isDevMode = process.env.NODE_ENV !== 'production';
 
   return (
     <div className="min-h-screen bg-slate-100 text-slate-900 flex flex-col font-sans">
@@ -312,21 +353,21 @@ export default function App() {
               </div>
             </div>
 
-            {/* Current Reviewer Profile & Quick Batch Dispatch */}
+            {/* Hub Controls, Status & Staff Station Management */}
             <div className="flex items-center gap-2 sm:gap-3">
               <div className="hidden sm:flex items-center gap-2 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-semibold">
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span>Hub API: Online</span>
+                <span>Hub API: {isHubOnline ? 'Online' : 'Reconnecting'}</span>
               </div>
 
-              {/* SQLite Database Engine Status & Multi-Clinician Architecture */}
+              {/* SQLite Database Engine Status */}
               <button
                 onClick={() => setIsStorageModalOpen(true)}
-                title="View SQLite 3 Database Status, Concurrency & Medicare Compliance Audit"
+                title="View SQLite 3 Database Status, Retention & Medicare Compliance Audit"
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-xs font-semibold transition-all cursor-pointer"
               >
                 <Database className="w-3.5 h-3.5 text-indigo-600" />
-                <span className="hidden md:inline">SQLite Engine</span>
+                <span className="hidden md:inline">SQLite Audit</span>
               </button>
 
               {/* LAN Security & Keys button */}
@@ -341,7 +382,7 @@ export default function App() {
 
               {/* Lock Station Button */}
               <button
-                onClick={() => setIsStationLocked(true)}
+                onClick={handleLockStation}
                 title="Lock Station Screen (Australian Privacy APP 11 Compliance)"
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-all cursor-pointer"
               >
@@ -349,18 +390,20 @@ export default function App() {
                 <span className="hidden sm:inline">Lock</span>
               </button>
 
+              {/* Log Out Button */}
               <button
-                onClick={() => setActiveTab('brainstorm')}
-                className="hidden lg:flex items-center gap-1.5 px-3 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition-all cursor-pointer"
+                onClick={handleLogout}
+                title="Log Out Active Staff Session"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-xs font-semibold transition-all cursor-pointer"
               >
-                <Lightbulb className="w-3.5 h-3.5 text-amber-500" />
-                <span>LAN Setup</span>
+                <LogOut className="w-3.5 h-3.5 text-rose-600" />
+                <span className="hidden sm:inline">Log Out</span>
               </button>
 
               {/* Active Staff profile */}
               <div 
-                onClick={() => setIsStationLocked(true)}
-                title="Click to Switch Staff or Lock Station"
+                onClick={handleLockStation}
+                title="Click to Lock Station or Switch Staff"
                 className="flex items-center gap-2.5 pl-2 border-l border-slate-200 cursor-pointer hover:opacity-80"
               >
                 <div className="hidden md:flex flex-col text-right">
@@ -389,18 +432,6 @@ export default function App() {
             </button>
 
             <button
-              onClick={() => setActiveTab('simulator')}
-              className={`py-3 px-3 border-b-2 flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'simulator'
-                  ? 'border-blue-600 text-blue-700 font-bold'
-                  : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
-              }`}
-            >
-              <HeartPulse className="w-4 h-4" />
-              Portal Scraper Simulator (4 Portals)
-            </button>
-
-            <button
               onClick={() => setActiveTab('extension')}
               className={`py-3 px-3 border-b-2 flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
                 activeTab === 'extension'
@@ -410,18 +441,6 @@ export default function App() {
             >
               <FolderDown className="w-4 h-4" />
               Browser Extension Package (.zip)
-            </button>
-
-            <button
-              onClick={() => setActiveTab('brainstorm')}
-              className={`py-3 px-3 border-b-2 flex items-center gap-2 transition-all cursor-pointer whitespace-nowrap ${
-                activeTab === 'brainstorm'
-                  ? 'border-blue-600 text-blue-700 font-bold'
-                  : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
-              }`}
-            >
-              <Lightbulb className="w-4 h-4 text-amber-500" />
-              Brainstorming & Risk Analysis
             </button>
           </div>
         </div>
@@ -440,37 +459,22 @@ export default function App() {
             onOpenEndOfWeekSheetModal={() => setIsEndOfWeekModalOpen(true)}
             existingBillingSheets={billingSheets}
             onResetSampleData={handleResetSampleData}
-          />
-        )}
-
-        {activeTab === 'simulator' && (
-          <PortalSimulator
-            records={records}
-            onUpdateStatus={handleUpdateStatus}
-            onSaveRecord={handleAddRecord}
-            onDraftOutlook={(rec) => {
-              setActiveRecordsForModal([rec]);
-              setIsOutlookOpen(true);
-            }}
+            isDevMode={isDevMode}
           />
         )}
 
         {activeTab === 'extension' && (
           <ExtensionDownloader />
         )}
-
-        {activeTab === 'brainstorm' && (
-          <BrainstormingAnalysis />
-        )}
       </main>
 
       {/* Footer */}
       <footer className="bg-white border-t border-slate-200 py-4 text-center text-xs text-slate-500 print:hidden">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>Cardiac Remote Monitoring Practice Hub • Tailored for Medicare Items 11725, 11719, 11736 & 11737</span>
+          <span>Cardiac Remote Monitoring Practice Hub • Australian Medicare MBS Items 11725, 11719, 11736 & 11737</span>
           <div className="flex items-center gap-4">
             <span className="flex items-center gap-1 text-emerald-700">
-              <ShieldCheck className="w-3.5 h-3.5" /> Privacy & 90-Day Rule Audit Engine Active
+              <ShieldCheck className="w-3.5 h-3.5" /> Privacy & Medicare Audit Engine Active
             </span>
           </div>
         </div>
@@ -491,7 +495,7 @@ export default function App() {
           clinicSecurityKey={clinicSecurityKey}
           autoLockMinutes={autoLockMinutes}
           onUpdateAutoLock={(mins) => setAutoLockMinutes(mins)}
-          onLockStationNow={() => setIsStationLocked(true)}
+          onLockStationNow={handleLockStation}
         />
       )}
 

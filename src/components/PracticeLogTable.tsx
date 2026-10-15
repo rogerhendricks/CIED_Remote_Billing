@@ -31,7 +31,8 @@ interface PracticeLogTableProps {
   onOpenPdfModal: (selectedRecords: PatientRecord[]) => void;
   onOpenEndOfWeekSheetModal: () => void;
   existingBillingSheets?: EndOfWeekBillingSheet[];
-  onResetSampleData: () => void;
+  onResetSampleData?: () => void;
+  isDevMode?: boolean;
 }
 
 export const PracticeLogTable: React.FC<PracticeLogTableProps> = ({
@@ -43,7 +44,8 @@ export const PracticeLogTable: React.FC<PracticeLogTableProps> = ({
   onOpenPdfModal,
   onOpenEndOfWeekSheetModal,
   existingBillingSheets = [],
-  onResetSampleData
+  onResetSampleData,
+  isDevMode = false
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedVendor, setSelectedVendor] = useState<string>('all');
@@ -387,14 +389,28 @@ export const PracticeLogTable: React.FC<PracticeLogTableProps> = ({
             <tbody className="divide-y divide-slate-100">
               {filteredRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-400">
-                    <p className="text-sm font-medium">No patient records match the filters.</p>
-                    <button
-                      onClick={onResetSampleData}
-                      className="mt-2 text-xs text-blue-600 underline hover:text-blue-800 font-semibold cursor-pointer"
-                    >
-                      Reset with sample patient logs from the 4 portals
-                    </button>
+                  <td colSpan={9} className="py-16 text-center text-slate-400">
+                    <div className="max-w-md mx-auto space-y-2 px-4">
+                      <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center mx-auto text-slate-400 mb-2">
+                        <Users className="w-5 h-5" />
+                      </div>
+                      <p className="text-sm font-semibold text-slate-700">No patient transmissions found</p>
+                      <p className="text-xs text-slate-500">
+                        {records.length === 0
+                          ? 'No transmissions logged yet. Use the browser extension in Biotronik, CareLink, Latitude, or Merlin to capture patient records, or click "+ Add Patient Log".'
+                          : 'No records match your active search filters.'}
+                      </p>
+                      {isDevMode && onResetSampleData && records.length === 0 && (
+                        <div className="pt-2">
+                          <button
+                            onClick={onResetSampleData}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 font-medium cursor-pointer transition-all"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" /> Dev: Load Sample Data
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ) : (
@@ -526,14 +542,17 @@ export const PracticeLogTable: React.FC<PracticeLogTableProps> = ({
             {selectedIds.length > 0 && <span className="ml-2 font-bold text-blue-700">({selectedIds.length} selected for batch)</span>}
           </div>
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={onResetSampleData}
-              className="text-xs text-slate-500 hover:text-slate-800 font-medium flex items-center gap-1 cursor-pointer"
-            >
-              <RotateCcw className="w-3.5 h-3.5" /> Reload Demo Sample Records
-            </button>
-          </div>
+          {isDevMode && onResetSampleData && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={onResetSampleData}
+                title="Dev utility: Seed demo patient records"
+                className="text-xs text-slate-400 hover:text-slate-700 font-medium flex items-center gap-1 cursor-pointer transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Dev: Seed Demo Data
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

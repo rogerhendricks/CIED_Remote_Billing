@@ -1,16 +1,49 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { createServer as createViteServer } from 'vite';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+const CLINIC_SECURITY_KEY = process.env.CLINIC_SECURITY_KEY || 'CARDIO-WESTMEAD-8820';
+const CLINIC_NAME = process.env.CLINIC_NAME || 'Westmead Hospital Cardiology Practice';
+const SEED_DEMO_DATA = process.env.SEED_DEMO_DATA === 'true';
 
-// Middleware for parsing JSON
-app.use(express.json());
+// Staff PINs configuration (comma-separated PINs from env or secure defaults)
+const rawPins = process.env.CLINIC_STAFF_PINS
+  ? process.env.CLINIC_STAFF_PINS.split(',').map(p => p.trim()).filter(Boolean)
+  : ['8820', '9911'];
+const VALID_STAFF_PINS = new Set<string>(rawPins);
 
-// Enable CORS for browser extensions running on any of the 4 medical portal domains
+// Session store with TTL (12-hour expiration)
+interface StaffSession {
+  token: string;
+  staffName: string;
+  createdAt: number;
+  expiresAt: number;
+}
+const activeSessions = new Map<string, StaffSession>();
+const SESSION_DURATION_MS = 12 * 60 * 60 * 1000; // 12 hours
+
+// Rate limiting: track failed login attempts by IP to prevent brute-force attacks
+const failedLoginTracker = new Map<string, { count: number; lockUntil: number }>();
+
+// Middleware for parsing JSON with payload limit
+app.use(express.json({ limit: '5mb' }));
+
+// Security Headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+// Enable CORS for browser extensions and clinic LAN clients
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -21,25 +54,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// ==========================================
-// SECURITY & AUTHENTICATION CONFIGURATION
-// ==========================================
-// In a clinical LAN, port 3000 is protected by:
-// 1. Clinic Secret API Key (used by Chrome/Edge extensions on staff PCs)
-// 2. Staff PIN / Session Tokens (used by browsers accessing the Web Hub)
-const CLINIC_SECURITY_KEY = process.env.CLINIC_SECURITY_KEY || 'CARDIO-WESTMEAD-8820';
-const VALID_STAFF_PINS = ['1234', '8820', '9911'];
-const activeSessionTokens = new Set<string>();
-
-// Pre-seed an initial session token for development convenience
-activeSessionTokens.add('dev-session-cardiac-auth');
-
 // Auth validation middleware for protected API endpoints
 function requireClinicAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   // Publicly accessible health, auth, and storage audit endpoints
   if (
     req.path === '/api/health' || 
     req.path === '/api/auth/login' || 
+    req.path === '/api/auth/logout' ||
     req.path === '/api/auth/verify' ||
     req.path === '/api/auth/config' ||
     req.path === '/api/storage/info'
@@ -58,15 +79,20 @@ function requireClinicAuth(req: express.Request, res: express.Response, next: ex
 
   // Check 2: Web Session Token header (sent by authenticated staff in web browser)
   const sessionToken = req.headers['x-session-token'] as string;
-  if (sessionToken && activeSessionTokens.has(sessionToken)) {
-    return next();
+  if (sessionToken && activeSessions.has(sessionToken)) {
+    const session = activeSessions.get(sessionToken)!;
+    if (session.expiresAt > Date.now()) {
+      return next();
+    }
+    // Expired session
+    activeSessions.delete(sessionToken);
   }
 
   // If both fail, block request with 401 Unauthorized
   return res.status(401).json({
     success: false,
     code: 'CLINIC_AUTH_REQUIRED',
-    error: 'Access Denied: Valid Clinic Security Key or authenticated Staff Session required to access patient records.'
+    error: 'Access Denied: Valid Clinic Security Key or active authenticated Staff Session required.'
   });
 }
 
@@ -132,7 +158,7 @@ interface ServerBillingSheet {
 // High-concurrency ACID storage with WAL mode, B-Tree indexes,
 // and 7+ year Australian Medicare compliance audit trail.
 // ==========================================
-const DATA_DIR = path.join(process.cwd(), 'data');
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(process.cwd(), 'data');
 const DB_FILE_PATH = path.join(DATA_DIR, 'practice.db');
 const JSON_LEGACY_PATH = path.join(DATA_DIR, 'practice_db.json');
 
@@ -690,13 +716,17 @@ function initDatabase() {
     }
 
     if (migrated === 0) {
-      console.log('[SQLITE] Seeding default clinical records into SQLite practice.db...');
-      db.exec('BEGIN TRANSACTION;');
-      for (const seed of INITIAL_SEED_RECORDS) {
-        insertRecordInDb(seed);
+      if (SEED_DEMO_DATA) {
+        console.log('[SQLITE] SEED_DEMO_DATA=true: Seeding default clinical records into SQLite practice.db...');
+        db.exec('BEGIN TRANSACTION;');
+        for (const seed of INITIAL_SEED_RECORDS) {
+          insertRecordInDb(seed);
+        }
+        db.exec('COMMIT;');
+        console.log(`[SQLITE] Seeded ${INITIAL_SEED_RECORDS.length} records into practice.db.`);
+      } else {
+        console.log('[SQLITE] Production database ready (0 records). Clean state awaiting live clinical transmissions.');
       }
-      db.exec('COMMIT;');
-      console.log(`[SQLITE] Seeded ${INITIAL_SEED_RECORDS.length} records into practice.db.`);
     }
   } else {
     console.log(`[SQLITE] Connected to existing SQLite database: ${countRow.count} clinical records ready.`);
@@ -953,56 +983,133 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     service: 'Cardiac Billing Hub', 
+    clinicName: CLINIC_NAME,
     authRequired: true,
     time: new Date().toISOString() 
   });
 });
 
-// Authentication Config & Status endpoint
+// Authentication Config & Status endpoint (Safe for public inspection: never exposes full master key)
 app.get('/api/auth/config', (req, res) => {
   res.json({
     success: true,
-    clinicName: 'Westmead Hospital Cardiology Practice',
+    clinicName: CLINIC_NAME,
     authRequired: true,
-    clinicKeyMasked: CLINIC_SECURITY_KEY.substring(0, 7) + '****',
-    clinicKeyFull: CLINIC_SECURITY_KEY // Accessible on the local machine
+    clinicKeyMasked: CLINIC_SECURITY_KEY ? CLINIC_SECURITY_KEY.substring(0, 4) + '****' : '****'
   });
 });
 
 // POST Staff / Clinic Sign In
 app.post('/api/auth/login', (req, res) => {
+  const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+
+  // Rate limiting check: 5 attempts per 5 minutes per IP
+  const attemptInfo = failedLoginTracker.get(clientIp);
+  if (attemptInfo && attemptInfo.lockUntil > now) {
+    const secondsRemaining = Math.ceil((attemptInfo.lockUntil - now) / 1000);
+    return res.status(429).json({
+      success: false,
+      error: `Too many failed attempts from this IP. Please wait ${secondsRemaining} seconds before trying again.`
+    });
+  }
+
   const { passcode, pin, staffName } = req.body;
 
   const isValidKey = passcode && (passcode.trim() === CLINIC_SECURITY_KEY);
-  const isValidPin = pin && (VALID_STAFF_PINS.includes(pin.trim()) || pin.trim() === '1234');
+  const isValidPin = pin && VALID_STAFF_PINS.has(pin.trim());
 
   if (isValidKey || isValidPin) {
-    const sessionToken = 'sess-' + Math.random().toString(36).substring(2) + Date.now();
-    activeSessionTokens.add(sessionToken);
+    failedLoginTracker.delete(clientIp);
+    const sessionToken = 'sess-' + crypto.randomUUID();
+    const expiresAt = now + SESSION_DURATION_MS;
 
-    console.log(`[AUTH] Staff ${staffName || 'Reviewer'} successfully authenticated`);
+    activeSessions.set(sessionToken, {
+      token: sessionToken,
+      staffName: staffName || (isValidKey ? 'Clinic Administrator' : 'Authenticated Staff'),
+      createdAt: now,
+      expiresAt
+    });
+
+    console.log(`[AUTH] Staff "${staffName || 'Reviewer'}" successfully authenticated from ${clientIp}`);
 
     return res.json({
       success: true,
       sessionToken,
-      staffName: staffName || 'Authenticated Staff',
+      staffName: staffName || (isValidKey ? 'Clinic Administrator' : 'Authenticated Staff'),
+      expiresAt,
       message: 'Authentication successful'
     });
   }
 
+  // Record failed attempt
+  const currentAttempts = (attemptInfo ? attemptInfo.count : 0) + 1;
+  const lockUntil = currentAttempts >= 5 ? now + 5 * 60 * 1000 : 0;
+  failedLoginTracker.set(clientIp, { count: currentAttempts, lockUntil });
+
   return res.status(401).json({
     success: false,
-    error: 'Invalid Clinic Passcode or Staff PIN. Contact the Practice Manager if forgotten.'
+    error: lockUntil > 0 
+      ? 'Too many failed login attempts. Temporarily locked for 5 minutes.' 
+      : 'Invalid Clinic Security Key or Staff PIN. Please try again.'
   });
+});
+
+// POST Staff Logout
+app.post('/api/auth/logout', (req, res) => {
+  const token = req.headers['x-session-token'] as string;
+  if (token) {
+    activeSessions.delete(token);
+  }
+  return res.json({ success: true, message: 'Logged out successfully' });
 });
 
 // GET verify session token
 app.get('/api/auth/verify', (req, res) => {
   const token = req.headers['x-session-token'] as string;
-  if (token && activeSessionTokens.has(token)) {
-    return res.json({ success: true, valid: true });
+  if (token && activeSessions.has(token)) {
+    const session = activeSessions.get(token)!;
+    if (session.expiresAt > Date.now()) {
+      return res.json({ success: true, valid: true, staffName: session.staffName });
+    }
+    activeSessions.delete(token);
   }
   return res.json({ success: false, valid: false });
+});
+
+// POST load demo data (for development or admin testing)
+app.post('/api/dev/seed', (req, res) => {
+  const isDev = process.env.NODE_ENV !== 'production';
+  const clinicKeyHeader = req.headers['x-clinic-key'] as string;
+  const isAuthorizedAdmin = clinicKeyHeader === CLINIC_SECURITY_KEY;
+
+  if (!isDev && !isAuthorizedAdmin) {
+    return res.status(403).json({ success: false, error: 'Demo seeding disabled in production unless authorized with Master Clinic Key' });
+  }
+
+  db.exec('BEGIN TRANSACTION;');
+  for (const seed of INITIAL_SEED_RECORDS) {
+    insertRecordInDb(seed);
+  }
+  db.exec('COMMIT;');
+
+  console.log(`[SQLITE] Seeded ${INITIAL_SEED_RECORDS.length} test records into practice.db`);
+  return res.json({ success: true, count: INITIAL_SEED_RECORDS.length, message: 'Seeded test records' });
+});
+
+// POST clear records (for development or admin reset)
+app.post('/api/dev/clear', (req, res) => {
+  const isDev = process.env.NODE_ENV !== 'production';
+  const clinicKeyHeader = req.headers['x-clinic-key'] as string;
+  const isAuthorizedAdmin = clinicKeyHeader === CLINIC_SECURITY_KEY;
+
+  if (!isDev && !isAuthorizedAdmin) {
+    return res.status(403).json({ success: false, error: 'Database reset disabled in production' });
+  }
+
+  db.exec('DELETE FROM records; DELETE FROM billing_sheets;');
+  console.log('[SQLITE] Admin cleared all records from practice.db');
+  return res.json({ success: true, message: 'All patient records and billing sheets cleared' });
 });
 
 
@@ -1278,9 +1385,37 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Cardiac Billing Hub Server (SQLite engine) running on http://0.0.0.0:${PORT}`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`Cardiac Billing Hub Server running on http://${HOST}:${PORT} [Env: ${process.env.NODE_ENV || 'development'}]`);
   });
+
+  // Graceful shutdown handling to flush WAL and close SQLite connection safely
+  let isShuttingDown = false;
+  const gracefulShutdown = (signal: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log(`\n[SHUTDOWN] Received ${signal}. Gracefully stopping HTTP server and closing SQLite database...`);
+
+    server.close(() => {
+      try {
+        db.close();
+        console.log('[SQLITE] Database connection closed cleanly.');
+      } catch (err) {
+        console.error('[SQLITE] Error closing database:', err);
+      }
+      console.log('[SHUTDOWN] Process terminated gracefully.');
+      process.exit(0);
+    });
+
+    // Force exit after 5 seconds if connections don't drain
+    setTimeout(() => {
+      console.warn('[SHUTDOWN] Forcefully terminating process after timeout.');
+      process.exit(1);
+    }, 5000).unref();
+  };
+
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 }
 
 startServer();

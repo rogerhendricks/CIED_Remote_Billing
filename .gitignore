@@ -4,5 +4,15 @@ dist/
 coverage/
 .DS_Store
 *.log
-.env*
+.env
+.env.local
+.env.*.local
 !.env.example
+
+# Clinical SQLite Database files (Never commit patient databases)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-*
+data/*.json
+data/backups/

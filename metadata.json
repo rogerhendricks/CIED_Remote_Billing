@@ -1,6 +1,0 @@
-{
-  "name": "Cardiac Remote Monitoring Billing Hub",
-  "description": "Clinical log, MBS billing code manager, Outlook email integration, and browser extension for Biotronik, Latitude, CareLink, and Merlin cardiac monitoring portals.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

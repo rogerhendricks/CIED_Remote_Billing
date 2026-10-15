@@ -3,14 +3,10 @@ import {
   Lock, 
   Unlock, 
   ShieldCheck, 
-  HeartPulse, 
   Key, 
-  Users, 
   Building2, 
   AlertCircle,
-  HelpCircle,
-  ShieldAlert,
-  ChevronRight
+  ShieldAlert
 } from 'lucide-react';
 import { ClinicStaff } from '../types';
 
@@ -20,21 +16,21 @@ export const CLINIC_STAFF_MEMBERS: ClinicStaff[] = [
     name: 'Roger Hendricks',
     role: 'Cardiac Technologist / EP Specialist',
     initials: 'RH',
-    pin: '1234'
+    pin: ''
   },
   {
     id: 'staff-2',
     name: 'Sarah Chen, RN',
     role: 'Cardiac Device Specialist Nurse',
     initials: 'SC',
-    pin: '1234'
+    pin: ''
   },
   {
     id: 'staff-3',
     name: 'Dr. David Tanous',
     role: 'Consultant Cardiologist & EP',
     initials: 'DT',
-    pin: '8820'
+    pin: ''
   }
 ];
 
@@ -61,17 +57,46 @@ export const ClinicLockScreen: React.FC<ClinicLockScreenProps> = ({
 
     try {
       if (useMasterKey) {
-        if (masterKeyInput.trim() === clinicSecurityKey.trim()) {
-          onUnlock(selectedStaff, 'master-auth-' + Date.now());
+        if (!masterKeyInput.trim()) {
+          setErrorMsg('Please enter the Master Clinic Security Key.');
+          setIsAuthenticating(false);
+          return;
+        }
+
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            passcode: masterKeyInput.trim(),
+            staffName: 'Clinic Administrator'
+          })
+        });
+
+        const data = await res.json();
+        if (res.ok && data.success) {
+          const adminStaff: ClinicStaff = {
+            id: 'admin',
+            name: 'Clinic Administrator',
+            role: 'Practice Administrator',
+            initials: 'CA',
+            pin: ''
+          };
+          onUnlock(adminStaff, data.sessionToken);
           return;
         } else {
-          setErrorMsg('Invalid Clinic Security Key. Please verify with your Practice Manager.');
+          setErrorMsg(data.error || 'Invalid Clinic Security Key. Please verify with your Practice Manager.');
           setIsAuthenticating(false);
           return;
         }
       }
 
-      // Check PIN
+      if (!pin.trim()) {
+        setErrorMsg('Please enter your Staff PIN.');
+        setIsAuthenticating(false);
+        return;
+      }
+
+      // Check PIN via server authentication
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -81,24 +106,14 @@ export const ClinicLockScreen: React.FC<ClinicLockScreenProps> = ({
         })
       });
 
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json();
+      if (res.ok && data.success) {
         onUnlock(selectedStaff, data.sessionToken);
       } else {
-        // Fallback for standalone / client mode: check local staff pin
-        if (pin === selectedStaff.pin || pin === '1234') {
-          onUnlock(selectedStaff, 'local-session-' + Date.now());
-        } else {
-          setErrorMsg('Incorrect PIN. (Default clinic PIN: 1234)');
-        }
+        setErrorMsg(data.error || 'Incorrect Staff PIN. Please try again.');
       }
     } catch (err) {
-      // Offline fallback
-      if (pin === selectedStaff.pin || pin === '1234') {
-        onUnlock(selectedStaff, 'offline-token-' + Date.now());
-      } else {
-        setErrorMsg('Incorrect PIN. (Default clinic PIN: 1234)');
-      }
+      setErrorMsg('Unable to connect to Hub Server. Please verify local network connection.');
     } finally {
       setIsAuthenticating(false);
     }
@@ -108,14 +123,6 @@ export const ClinicLockScreen: React.FC<ClinicLockScreenProps> = ({
     if (pin.length < 6) {
       const newPin = pin + digit;
       setPin(newPin);
-      if (newPin.length === 4) {
-        // Auto submit if 4 digits
-        setTimeout(() => {
-          if (newPin === selectedStaff.pin || newPin === '1234') {
-            onUnlock(selectedStaff, 'quick-pin-' + Date.now());
-          }
-        }, 150);
-      }
     }
   };
 
@@ -140,7 +147,7 @@ export const ClinicLockScreen: React.FC<ClinicLockScreenProps> = ({
         <div className="bg-blue-50/70 border-b border-blue-100 p-3.5 text-xs text-blue-900 flex items-start gap-2.5">
           <ShieldAlert className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
           <p className="leading-tight">
-            <strong>LAN Security Active:</strong> Port 3000 requires staff authentication to prevent unauthorized viewing over clinic Wi-Fi & guest networks.
+            <strong>Clinical Station Authentication:</strong> Staff login is required to view confidential patient records and MBS billing summaries.
           </p>
         </div>
 
@@ -194,7 +201,6 @@ export const ClinicLockScreen: React.FC<ClinicLockScreenProps> = ({
                     <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">
                       Enter Staff PIN for {selectedStaff.name.split(' ')[0]}:
                     </label>
-                    <span className="text-[11px] text-slate-400 font-mono">Default: 1234</span>
                   </div>
                   
                   <div className="relative">
@@ -254,19 +260,19 @@ export const ClinicLockScreen: React.FC<ClinicLockScreenProps> = ({
                     Master Clinic Security Key:
                   </label>
                   <span className="text-[10px] text-blue-700 bg-blue-50 px-2 py-0.5 rounded font-mono font-bold">
-                    Admin Passcode
+                    Admin Key
                   </span>
                 </div>
                 <input
-                  type="text"
+                  type="password"
                   value={masterKeyInput}
                   onChange={(e) => setMasterKeyInput(e.target.value)}
-                  placeholder="e.g. CARDIO-WESTMEAD-8820"
+                  placeholder="Enter Master Security Key"
                   autoFocus
                   className="w-full text-center font-mono font-bold py-2.5 bg-slate-50 border border-slate-300 rounded-xl focus:ring-2 focus:ring-blue-600 focus:bg-white text-sm"
                 />
                 <p className="text-[11px] text-slate-500 mt-1.5">
-                  Default setup key: <code className="text-blue-700 font-bold">{clinicSecurityKey}</code>
+                  Authorized clinic administrators can unlock with the master security key configured in server environment.
                 </p>
               </div>
 
@@ -280,10 +286,10 @@ export const ClinicLockScreen: React.FC<ClinicLockScreenProps> = ({
               <button
                 type="submit"
                 disabled={isAuthenticating}
-                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm shadow-md shadow-blue-500/20 flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm shadow-md shadow-blue-500/20 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
               >
                 <Key className="w-4 h-4" />
-                <span>Verify Master Key & Unlock</span>
+                <span>{isAuthenticating ? 'Verifying...' : 'Verify Master Key & Unlock'}</span>
               </button>
             </form>
           )}
@@ -300,7 +306,6 @@ export const ClinicLockScreen: React.FC<ClinicLockScreenProps> = ({
             >
               {useMasterKey ? '← Back to Staff PIN Sign In' : '🔑 Unlock with Master Clinic Key'}
             </button>
-            <span className="text-[11px] text-slate-400">PIN: 1234</span>
           </div>
         </div>
       </div>
